@@ -143,7 +143,8 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tabs = st.tabs(["Panorama", "Segmentos", "Turmas", "Padrão e Desvio", "Forecast H2"])
+tabs = st.tabs(["Panorama", "Segmentos", "Turmas", "Padrão e Desvio",
+                "Vendas x Custos", "Forecast H2"])
 
 # ============================================================================
 # TAB 1 — PANORAMA
@@ -376,60 +377,152 @@ with tabs[3]:
     st.plotly_chart(fig, use_container_width=True)
 
     st.write("")
-    left, right = st.columns(2)
-
-    # classificação: estável vs sazonal (coef. de variação do realizado mensal)
-    with left:
-        st.markdown('<div class="section">Comportamento do custo</div>', unsafe_allow_html=True)
-        st.markdown('<div class="hint">Recorrência ao longo dos meses (CV do realizado)</div>',
-                    unsafe_allow_html=True)
-        cls = []
-        for p in ytd["produto"].unique():
-            s = ytd[ytd["produto"] == p].set_index("mes")["real_Custos Totais"].reindex(range(1, 6)).fillna(0)
-            mean = s.mean()
-            cv = s.std() / mean if mean else 0
-            tot = s.sum()
-            cls.append((p, cv, tot))
-        cdf = pd.DataFrame(cls, columns=["produto", "cv", "tot"])
-        cdf["tipo"] = cdf["cv"].apply(lambda x: "Recorrente / estável" if x < 0.6
-                                      else ("Concentrado" if x < 1.2 else "Pontual / sazonal"))
-        fig = go.Figure(go.Scatter(
-            x=cdf["cv"], y=cdf["tot"], mode="markers+text",
-            text=cdf["produto"], textposition="top center", textfont=dict(size=9, color=MUTED),
-            marker=dict(size=cdf["tot"] / cdf["tot"].max() * 34 + 8, color=cdf["cv"],
-                        colorscale=[[0, "#AEB6BF"], [1, "#0A2540"]], line=dict(color=CARD, width=1)),
-            hovertemplate="%{text}<br>CV: %{x:.2f}<extra></extra>"))
-        fig.add_vline(x=0.6, line_dash="dot", line_color=NEUTRO)
-        fig.add_vline(x=1.2, line_dash="dot", line_color=NEUTRO)
-        fig.update_xaxes(title="← estável   |   sazonal →")
-        fig.update_yaxes(title="custo YTD")
-        plot_layout(fig, 360, legend_top=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ranking de desvio
-    with right:
-        st.markdown('<div class="section">Ranking de desvio (YTD)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="hint">Pontos percentuais vs orçado · só produtos orçados</div>',
-                    unsafe_allow_html=True)
-        rk = ytd.groupby("produto").agg(r=("real_Custos Totais", "sum"),
-                                        o=("orc_Custos Totais", "sum")).reset_index()
-        rk = rk[rk["o"] > 0]
-        rk["d"] = (rk["r"] - rk["o"]) / rk["o"] * 100
-        rk = rk.sort_values("d")
-        fig = go.Figure(go.Bar(
-            x=rk["d"], y=rk["produto"], orientation="h",
-            marker_color=[VERDE if v <= 0 else VERMELHO for v in rk["d"]],
-            text=[f"{v:+.0f}%" for v in rk["d"]], textposition="outside",
-            textfont=dict(size=10), hovertemplate="%{y}: %{x:+.0f}%<extra></extra>"))
-        fig.add_vline(x=0, line_color=INK, line_width=1)
-        plot_layout(fig, max(360, 24 * len(rk)))
-        fig.update_xaxes(title="desvio % (negativo = economia)")
-        st.plotly_chart(fig, use_container_width=True)
+    # ranking de desvio (largura total)
+    st.markdown('<div class="section">Ranking de desvio (YTD)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hint">Diferença % do custo realizado vs orçado · '
+                'negativo = economia · só produtos orçados</div>', unsafe_allow_html=True)
+    rk = ytd.groupby("produto").agg(r=("real_Custos Totais", "sum"),
+                                    o=("orc_Custos Totais", "sum")).reset_index()
+    rk = rk[rk["o"] > 0]
+    rk["d"] = (rk["r"] - rk["o"]) / rk["o"] * 100
+    rk = rk.sort_values("d")
+    fig = go.Figure(go.Bar(
+        x=rk["d"], y=rk["produto"], orientation="h",
+        marker_color=[VERDE if v <= 0 else VERMELHO for v in rk["d"]],
+        text=[f"{v:+.0f}%" for v in rk["d"]], textposition="outside",
+        textfont=dict(size=10), hovertemplate="%{y}: %{x:+.0f}%<extra></extra>"))
+    fig.add_vline(x=0, line_color=INK, line_width=1)
+    plot_layout(fig, max(360, 26 * len(rk)))
+    fig.update_xaxes(title="desvio % (negativo = economia)")
+    st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================================
-# TAB 5 — FORECAST H2
+# TAB 5 — VENDAS x CUSTOS  (custo caiu por vender menos ou por eficiência?)
 # ============================================================================
 with tabs[4]:
+    # agregados YTD (Jan-Mai)
+    R_real = ytd_sum("real_Receita Bruta")
+    C_real = ytd_sum("real_Custos Totais")
+    R_orc  = ytd_sum("orc_Receita Bruta")
+    C_orc  = ytd_sum("orc_Custos Totais")
+    r_real = C_real / R_real if R_real else 0     # custo / receita realizado
+    r_orc  = C_orc / R_orc if R_orc else 0        # custo / receita orçado
+
+    # decomposição do desvio de custo: volume (vendas) vs eficiência (intensidade)
+    ef_volume     = (R_real - R_orc) * r_orc          # custo explicado por vender +/- que o plano
+    ef_eficiencia = R_real * (r_real - r_orc)         # custo explicado por gastar +/- por R$ vendido
+    delta_custo   = C_real - C_orc                    # = ef_volume + ef_eficiencia
+
+    # veredito dinâmico
+    if abs(ef_eficiencia) >= abs(ef_volume):
+        domina = "eficiência operacional" if ef_eficiencia < 0 else "pressão de custo"
+        verdito = f"Predomina {domina}"
+    else:
+        domina = "menor volume de vendas" if (R_real - R_orc) < 0 else "maior volume de vendas"
+        verdito = f"Predomina {domina}"
+
+    st.markdown('<div class="hint">A receita e o custo caíram juntos (menos vendas) ou o '
+                'custo por real vendido melhorou (eficiência)? A decomposição abaixo separa os '
+                'dois efeitos.</div>', unsafe_allow_html=True)
+
+    c = st.columns(4)
+    kpis = [
+        ("Receita realizada (YTD)", brl(R_real),
+         f"Orçado {brl(R_orc)} · {(R_real-R_orc)/R_orc*100:+.0f}%" if R_orc else "", "", True),
+        ("Custo realizado (YTD)", brl(C_real),
+         f"Orçado {brl(C_orc)} · {(C_real-C_orc)/C_orc*100:+.0f}%" if C_orc else "", "", False),
+        ("Custo / Receita", f"{r_real*100:.1f}%",
+         f"Orçado {r_orc*100:.1f}% · {(r_real-r_orc)*100:+.1f} p.p.",
+         "down" if r_real <= r_orc else "up", False),
+        ("Leitura", verdito,
+         f"Eficiência {brl(ef_eficiencia)} · Volume {brl(ef_volume)}",
+         "down" if ef_eficiencia <= 0 else "up", False),
+    ]
+    for col, (lab, val, sub, cls, acc) in zip(c, kpis):
+        col.markdown(f"""<div class="kpi {'accent' if acc else ''}">
+            <div class="lab">{lab}</div><div class="val" style="font-size:21px;">{val}</div>
+            <div class="sub {cls}">{sub}</div></div>""", unsafe_allow_html=True)
+
+    st.write("")
+    left, right = st.columns([1.25, 1])
+
+    # ---- trajetória mensal: receita x custo x intensidade
+    with left:
+        st.markdown('<div class="section">Receita e custo mês a mês</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hint">Barras = realizado · linha = custo por R$ de receita (%). '
+                    'Se a linha sobe, o custo cresce mais que a venda</div>', unsafe_allow_html=True)
+        m = ytd.groupby("mes")[["real_Receita Bruta", "real_Custos Totais"]].sum().reindex(range(1, 6))
+        ratio = [(ct / rb * 100 if rb else None)
+                 for rb, ct in zip(m["real_Receita Bruta"], m["real_Custos Totais"])]
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_bar(x=[MESES[i] for i in m.index], y=m["real_Receita Bruta"], name="Receita",
+                    marker_color=AZUL, opacity=.45,
+                    hovertemplate="Receita: %{y:,.0f}<extra></extra>", secondary_y=False)
+        fig.add_bar(x=[MESES[i] for i in m.index], y=m["real_Custos Totais"], name="Custo",
+                    marker_color=LARANJA, hovertemplate="Custo: %{y:,.0f}<extra></extra>",
+                    secondary_y=False)
+        fig.add_scatter(x=[MESES[i] for i in m.index], y=ratio, name="Custo / Receita",
+                        mode="lines+markers", line=dict(color=INK, width=2.5, dash="dot"),
+                        marker=dict(size=7), connectgaps=True,
+                        hovertemplate="Custo/Receita: %{y:.0f}%<extra></extra>", secondary_y=True)
+        fig.update_layout(barmode="group")
+        plot_layout(fig, 360)
+        fig.update_yaxes(title_text="R$", secondary_y=False)
+        fig.update_yaxes(title_text="custo / receita %", secondary_y=True,
+                         showgrid=False, rangemode="tozero")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ---- waterfall: do orçado ao realizado
+    with right:
+        st.markdown('<div class="section">Por que o custo mudou</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hint">Do custo orçado ao realizado, separando o efeito de '
+                    'vendas (volume) do efeito de eficiência</div>', unsafe_allow_html=True)
+        fig = go.Figure(go.Waterfall(
+            orientation="v",
+            measure=["absolute", "relative", "relative", "total"],
+            x=["Custo<br>orçado", "Efeito<br>vendas", "Efeito<br>eficiência", "Custo<br>realizado"],
+            y=[C_orc, ef_volume, ef_eficiencia, C_real],
+            text=[brl(C_orc), brl(ef_volume), brl(ef_eficiencia), brl(C_real)],
+            textposition="outside", textfont=dict(size=10.5),
+            connector=dict(line=dict(color=BORDA)),
+            increasing=dict(marker=dict(color=VERMELHO)),
+            decreasing=dict(marker=dict(color=VERDE)),
+            totals=dict(marker=dict(color=LARANJA))))
+        plot_layout(fig, 360, legend_top=False)
+        fig.update_yaxes(rangemode="tozero")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ---- por produto: custo/receita realizado vs orçado
+    st.markdown('<div class="section">Custo por real de receita · por produto</div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="hint">Barra azul (realizado) à esquerda da cinza (orçado) = ganho de '
+                'eficiência · à direita = custo mais pesado que o planejado · '
+                'só produtos com receita realizada e orçada</div>', unsafe_allow_html=True)
+    g = ytd.groupby("produto").agg(
+        rr=("real_Receita Bruta", "sum"), cr=("real_Custos Totais", "sum"),
+        ro=("orc_Receita Bruta", "sum"), co=("orc_Custos Totais", "sum")).reset_index()
+    g = g[(g["rr"] > 0) & (g["ro"] > 0)].copy()
+    g["int_real"] = g["cr"] / g["rr"] * 100
+    g["int_orc"]  = g["co"] / g["ro"] * 100
+    g = g.sort_values("int_real", ascending=True)
+    fig = go.Figure()
+    fig.add_bar(y=g["produto"], x=g["int_orc"], name="Orçado", orientation="h",
+                marker_color=AZUL, opacity=.40,
+                hovertemplate="%{y} · orçado: %{x:.0f}%<extra></extra>")
+    fig.add_bar(y=g["produto"], x=g["int_real"], name="Realizado", orientation="h",
+                marker_color=LARANJA,
+                hovertemplate="%{y} · realizado: %{x:.0f}%<extra></extra>")
+    fig.update_layout(barmode="overlay")
+    fig.update_traces(width=.55, selector=dict(name="Realizado"))
+    fig.update_traces(width=.80, selector=dict(name="Orçado"))
+    plot_layout(fig, max(380, 26 * len(g)))
+    fig.update_xaxes(title="custo / receita (%)")
+    st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================================
+# TAB 6 — FORECAST H2
+# ============================================================================
+with tabs[5]:
     st.markdown('<div class="section">Leitura para o forecast do 2º semestre</div>',
                 unsafe_allow_html=True)
     st.markdown('<div class="hint">Compara o run-rate realizado (Jan–Mai) com o orçado e projeta '
