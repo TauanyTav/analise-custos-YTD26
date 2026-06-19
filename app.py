@@ -400,43 +400,51 @@ with tabs[3]:
 # TAB 5 — VENDAS x CUSTOS  (custo caiu por vender menos ou por eficiência?)
 # ============================================================================
 with tabs[4]:
-    # agregados YTD (Jan-Mai)
-    R_real = ytd_sum("real_Receita Bruta")
-    C_real = ytd_sum("real_Custos Totais")
-    R_orc  = ytd_sum("orc_Receita Bruta")
-    C_orc  = ytd_sum("orc_Custos Totais")
-    r_real = C_real / R_real if R_real else 0     # custo / receita realizado
-    r_orc  = C_orc / R_orc if R_orc else 0        # custo / receita orçado
-
-    # decomposição do desvio de custo: volume (vendas) vs eficiência (intensidade)
-    ef_volume     = (R_real - R_orc) * r_orc          # custo explicado por vender +/- que o plano
-    ef_eficiencia = R_real * (r_real - r_orc)         # custo explicado por gastar +/- por R$ vendido
-    delta_custo   = C_real - C_orc                    # = ef_volume + ef_eficiencia
-
-    # veredito dinâmico
-    if abs(ef_eficiencia) >= abs(ef_volume):
-        domina = "eficiência operacional" if ef_eficiencia < 0 else "pressão de custo"
-        verdito = f"Predomina {domina}"
-    else:
-        domina = "menor volume de vendas" if (R_real - R_orc) < 0 else "maior volume de vendas"
-        verdito = f"Predomina {domina}"
-
     st.markdown('<div class="hint">A receita e o custo caíram juntos (menos vendas) ou o '
-                'custo por real vendido melhorou (eficiência)? A decomposição abaixo separa os '
-                'dois efeitos.</div>', unsafe_allow_html=True)
+                'custo por real vendido melhorou (eficiência)? Escolha uma turma para isolar a '
+                'análise — ou veja a carteira inteira.</div>', unsafe_allow_html=True)
+
+    opcoes = ["Todos os produtos B2C"] + sorted(ytd["produto"].unique())
+    sel_vc = st.selectbox("Produto / turma", opcoes, key="vc_prod")
+    vc = ytd if sel_vc == opcoes[0] else ytd[ytd["produto"] == sel_vc]
+
+    # agregados YTD (Jan-Mai) do recorte selecionado
+    R_real = float(vc["real_Receita Bruta"].sum())
+    C_real = float(vc["real_Custos Totais"].sum())
+    R_orc  = float(vc["orc_Receita Bruta"].sum())
+    C_orc  = float(vc["orc_Custos Totais"].sum())
+    r_real = C_real / R_real if R_real else 0
+    r_orc  = C_orc / R_orc if R_orc else 0
+    tem_orc = R_orc > 0 and C_orc > 0
+
+    if tem_orc:
+        ef_volume     = (R_real - R_orc) * r_orc
+        ef_eficiencia = R_real * (r_real - r_orc)
+        if abs(ef_eficiencia) >= abs(ef_volume):
+            verdito = "Predomina eficiência" if ef_eficiencia < 0 else "Predomina pressão de custo"
+        else:
+            verdito = "Predomina menor venda" if (R_real - R_orc) < 0 else "Predomina maior venda"
+        sub_rec = f"Orçado {brl(R_orc)} · {(R_real-R_orc)/R_orc*100:+.0f}%"
+        sub_cus = f"Orçado {brl(C_orc)} · {(C_real-C_orc)/C_orc*100:+.0f}%"
+        sub_int = f"Orçado {r_orc*100:.1f}% · {(r_real-r_orc)*100:+.1f} p.p."
+        sub_lei = f"Eficiência {brl(ef_eficiencia)} · Volume {brl(ef_volume)}"
+        cls_int = "down" if r_real <= r_orc else "up"
+        cls_lei = "down" if ef_eficiencia <= 0 else "up"
+    else:
+        ef_volume = ef_eficiencia = 0
+        verdito = "Sem orçamento"
+        sub_rec = "Produto fora do orçado"
+        sub_cus = "Sem base de comparação"
+        sub_int = "Orçado —"
+        sub_lei = "Não estava no orçamento"
+        cls_int = cls_lei = ""
 
     c = st.columns(4)
     kpis = [
-        ("Receita realizada (YTD)", brl(R_real),
-         f"Orçado {brl(R_orc)} · {(R_real-R_orc)/R_orc*100:+.0f}%" if R_orc else "", "", True),
-        ("Custo realizado (YTD)", brl(C_real),
-         f"Orçado {brl(C_orc)} · {(C_real-C_orc)/C_orc*100:+.0f}%" if C_orc else "", "", False),
-        ("Custo / Receita", f"{r_real*100:.1f}%",
-         f"Orçado {r_orc*100:.1f}% · {(r_real-r_orc)*100:+.1f} p.p.",
-         "down" if r_real <= r_orc else "up", False),
-        ("Leitura", verdito,
-         f"Eficiência {brl(ef_eficiencia)} · Volume {brl(ef_volume)}",
-         "down" if ef_eficiencia <= 0 else "up", False),
+        ("Receita realizada (YTD)", brl(R_real), sub_rec, "", True),
+        ("Custo realizado (YTD)", brl(C_real), sub_cus, "", False),
+        ("Custo / Receita", f"{r_real*100:.1f}%", sub_int, cls_int, False),
+        ("Leitura", verdito, sub_lei, cls_lei, False),
     ]
     for col, (lab, val, sub, cls, acc) in zip(c, kpis):
         col.markdown(f"""<div class="kpi {'accent' if acc else ''}">
@@ -451,7 +459,7 @@ with tabs[4]:
         st.markdown('<div class="section">Receita e custo mês a mês</div>', unsafe_allow_html=True)
         st.markdown('<div class="hint">Barras = realizado · linha = custo por R$ de receita (%). '
                     'Se a linha sobe, o custo cresce mais que a venda</div>', unsafe_allow_html=True)
-        m = ytd.groupby("mes")[["real_Receita Bruta", "real_Custos Totais"]].sum().reindex(range(1, 6))
+        m = vc.groupby("mes")[["real_Receita Bruta", "real_Custos Totais"]].sum().reindex(range(1, 6)).fillna(0)
         ratio = [(ct / rb * 100 if rb else None)
                  for rb, ct in zip(m["real_Receita Bruta"], m["real_Custos Totais"])]
         fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -477,23 +485,31 @@ with tabs[4]:
         st.markdown('<div class="section">Por que o custo mudou</div>', unsafe_allow_html=True)
         st.markdown('<div class="hint">Do custo orçado ao realizado, separando o efeito de '
                     'vendas (volume) do efeito de eficiência</div>', unsafe_allow_html=True)
-        fig = go.Figure(go.Waterfall(
-            orientation="v",
-            measure=["absolute", "relative", "relative", "total"],
-            x=["Custo<br>orçado", "Efeito<br>vendas", "Efeito<br>eficiência", "Custo<br>realizado"],
-            y=[C_orc, ef_volume, ef_eficiencia, C_real],
-            text=[brl(C_orc), brl(ef_volume), brl(ef_eficiencia), brl(C_real)],
-            textposition="outside", textfont=dict(size=10.5),
-            connector=dict(line=dict(color=BORDA)),
-            increasing=dict(marker=dict(color=VERMELHO)),
-            decreasing=dict(marker=dict(color=VERDE)),
-            totals=dict(marker=dict(color=LARANJA))))
-        plot_layout(fig, 360, legend_top=False)
-        fig.update_yaxes(rangemode="tozero")
-        st.plotly_chart(fig, use_container_width=True)
+        if tem_orc:
+            fig = go.Figure(go.Waterfall(
+                orientation="v",
+                measure=["absolute", "relative", "relative", "total"],
+                x=["Custo<br>orçado", "Efeito<br>vendas", "Efeito<br>eficiência", "Custo<br>realizado"],
+                y=[C_orc, ef_volume, ef_eficiencia, C_real],
+                text=[brl(C_orc), brl(ef_volume), brl(ef_eficiencia), brl(C_real)],
+                textposition="outside", textfont=dict(size=10.5),
+                connector=dict(line=dict(color=BORDA)),
+                increasing=dict(marker=dict(color=VERMELHO)),
+                decreasing=dict(marker=dict(color=VERDE)),
+                totals=dict(marker=dict(color=LARANJA))))
+            plot_layout(fig, 360, legend_top=False)
+            fig.update_yaxes(rangemode="tozero")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.markdown(f'<div style="height:300px; display:flex; align-items:center; '
+                        f'justify-content:center; text-align:center; color:{MUTED}; '
+                        f'border:1px dashed {BORDA}; border-radius:12px; padding:20px;">'
+                        f'<b>{sel_vc}</b> não estava no orçamento de 2026,<br>então não há '
+                        f'plano para comparar. O gráfico ao lado mostra o realizado.</div>',
+                        unsafe_allow_html=True)
 
-    # ---- por produto: custo/receita realizado vs orçado
-    st.markdown('<div class="section">Custo por real de receita · por produto</div>',
+    # ---- por produto: custo/receita realizado vs orçado (ranking, destaca o selecionado)
+    st.markdown('<div class="section">Custo por real de receita · comparativo entre produtos</div>',
                 unsafe_allow_html=True)
     st.markdown('<div class="hint">Barra azul (realizado) à esquerda da cinza (orçado) = ganho de '
                 'eficiência · à direita = custo mais pesado que o planejado · '
@@ -505,12 +521,13 @@ with tabs[4]:
     g["int_real"] = g["cr"] / g["rr"] * 100
     g["int_orc"]  = g["co"] / g["ro"] * 100
     g = g.sort_values("int_real", ascending=True)
+    cor_real = [LARANJA if (sel_vc == opcoes[0] or p == sel_vc) else "#C2CAD3" for p in g["produto"]]
     fig = go.Figure()
     fig.add_bar(y=g["produto"], x=g["int_orc"], name="Orçado", orientation="h",
                 marker_color=AZUL, opacity=.40,
                 hovertemplate="%{y} · orçado: %{x:.0f}%<extra></extra>")
     fig.add_bar(y=g["produto"], x=g["int_real"], name="Realizado", orientation="h",
-                marker_color=LARANJA,
+                marker=dict(color=cor_real),
                 hovertemplate="%{y} · realizado: %{x:.0f}%<extra></extra>")
     fig.update_layout(barmode="overlay")
     fig.update_traces(width=.55, selector=dict(name="Realizado"))
